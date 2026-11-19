@@ -3565,7 +3565,7 @@ impl OptionsDialog {
                                 &[("error", err)],
                             ),
                         };
-                        text(&p, o.x + 30.0, o.y + 380.0, line, LIGHT_TEXT());
+                        text(&p, o.x + 30.0, o.y + 380.0, &line, LIGHT_TEXT());
                         // i18n: Options → zrok tunnel: label above the setup QR the phone reads
                         text(&p, o.x + 30.0, o.y + 404.0, crate::i18n::t("The phone's setup (ViaMDM reads it once):"), LIGHT_TEXT());
                         readonly_ltr(ui, r(o, 30.0, 414.0, 320.0, 21.0), &uri);

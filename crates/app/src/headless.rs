@@ -289,7 +289,7 @@ fn tell_tunnel(app: &mut crate::app::App) -> bool {
                 said(mdm_tunnel::Role::Socks),
                 said(mdm_tunnel::Role::Drive),
             );
-            let uri = crate::tunnel::setup_text(&app.settings, Some(tunnel));
+            let uri = mdm_tunnel::setup_uri(&tunnel.tokens());
             println!(
                 "On the phone, the ViaMDM app reads the setup from this QR (or its text):\n{}",
                 crate::remote::qr_text(&uri)
