@@ -569,6 +569,9 @@ Bug fixes from the first days of 0.5.0, a Safari extension, and more file types.
 
 These ship in the next version.
 
+- ✅ Small windows (About, Tell a friend, Speed Limiter settings, Keys and the others) are exactly
+  as large as their content at every display scale and interface size, with no scroll bars over
+  their buttons ([#1495](https://github.com/anefzaoui/misterdownloadmanager/issues/1495))
 - ✅ Chinese text from a font collection (macOS's Songti) is drawn with its regular face, not its
   first one, Songti SC Black ([#1483](https://github.com/anefzaoui/misterdownloadmanager/issues/1483))
 - ✅ The browser extension remembers paired servers and switches between them and this computer
