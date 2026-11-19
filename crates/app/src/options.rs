@@ -32,6 +32,51 @@ const SOUND_EVENTS: [&str; 4] = [
 ];
 
 /// A small entry dialog opened from a page.
+/// Remote → zrok tunnel...: the draft's tunnel fields, edited in the window and put back on
+/// OK (the window's OK; Options' own OK saves them with the rest).
+struct TunnelEdit {
+    on: bool,
+    command: String,
+    api_endpoint: String,
+    account_token: String,
+    open: bool,
+    grants: String,
+    api_token: String,
+    socks_token: String,
+    drive_token: String,
+    drive_dir: String,
+}
+
+impl TunnelEdit {
+    fn from(s: &Settings) -> Self {
+        TunnelEdit {
+            on: s.tunnel_on,
+            command: s.tunnel_command.clone(),
+            api_endpoint: s.tunnel_api_endpoint.clone(),
+            account_token: s.tunnel_account_token.clone(),
+            open: s.tunnel_open,
+            grants: s.tunnel_grants.clone(),
+            api_token: s.tunnel_api_token.clone(),
+            socks_token: s.tunnel_socks_token.clone(),
+            drive_token: s.tunnel_drive_token.clone(),
+            drive_dir: s.tunnel_drive_dir.clone(),
+        }
+    }
+
+    fn apply_to(self, s: &mut Settings) {
+        s.tunnel_on = self.on;
+        s.tunnel_command = self.command;
+        s.tunnel_api_endpoint = self.api_endpoint;
+        s.tunnel_account_token = self.account_token;
+        s.tunnel_open = self.open;
+        s.tunnel_grants = self.grants;
+        s.tunnel_api_token = self.api_token;
+        s.tunnel_socks_token = self.socks_token;
+        s.tunnel_drive_token = self.drive_token;
+        s.tunnel_drive_dir = self.drive_dir;
+    }
+}
+
 enum Sub {
     /// Sites Logins → New / Edit: (row being edited, site/path, user, password).
     Login(Option<usize>, String, String, String),
@@ -57,6 +102,8 @@ enum Sub {
     Account(AccountEdit),
     /// Remote → Pair a device...: the code shown, until a device pairs or it is closed.
     Pair,
+    /// Remote → zrok tunnel...: the tunnel's settings (crates/tunnel), live in the draft.
+    Tunnel,
     /// Archives → Archive passwords...: one password per line (#37).
     Passwords(String),
 }
@@ -225,6 +272,8 @@ pub struct OptionsDialog {
     /// Remote (#141): the running remote control (its state, paired devices, pairing), the
     /// port as typed, and the paired devices list's scroll and selection.
     remote: Option<mdm_remote::Remote>,
+    /// Remote → zrok tunnel...: the running tunnel (its state, shares' tokens).
+    tunnel: Option<mdm_tunnel::Tunnel>,
     port: String,
     device_rows: winui::RowList,
     /// Sites Logins → Cookies for video sites (#229): the browser in the list (an index into
@@ -270,6 +319,12 @@ impl OptionsDialog {
     /// With the app's remote control (Remote: its state, devices and pairing).
     pub fn with_remote(mut self, remote: Option<mdm_remote::Remote>) -> Self {
         self.remote = remote;
+        self
+    }
+
+    /// With the app's zrok tunnel (Remote → zrok tunnel...: its state, shares' tokens).
+    pub fn with_tunnel(mut self, tunnel: Option<mdm_tunnel::Tunnel>) -> Self {
+        self.tunnel = tunnel;
         self
     }
 
@@ -337,6 +392,7 @@ impl OptionsDialog {
             hatch_zip: crate::extractq::hatch_zip(),
             adapters: None,
             remote: None,
+            tunnel: None,
             port: settings.remote_port.to_string(),
             device_rows: Default::default(),
             cookie_browser: cookie_browser_at(settings),
@@ -3197,6 +3253,18 @@ impl OptionsDialog {
         )
         .clicked()
             || del_key;
+        // i18n: Options → Remote button: opens the zrok tunnel's settings
+        if winui::button_light(
+            ui,
+            r(o, 252.0, 398.0, 150.0, 21.0),
+            "zrok tunnel...",
+            ButtonKind::Normal,
+            false,
+        )
+        .clicked()
+        {
+            self.sub = Some(Sub::Tunnel);
+        }
         if pair && on {
             self.pair();
         }
@@ -3391,6 +3459,127 @@ impl OptionsDialog {
                     self.sub = Some(Sub::Pair);
                 } else if let Some(r) = &self.remote {
                     r.stop_pairing();
+                }
+            }
+            Sub::Tunnel => {
+                let mut e = TunnelEdit::from(&self.s);
+                let (status, uri) = match &self.tunnel {
+                    Some(t) => (Some(t.status()), mdm_tunnel::setup_uri(&t.tokens())),
+                    None => (None, crate::tunnel::setup_text(&self.s, None)),
+                };
+                let out = window(
+                    ctx,
+                    "opt-tunnel",
+                    // i18n: title of the zrok tunnel's settings window
+                    crate::i18n::mark("zrok tunnel"),
+                    [540.0, 500.0],
+                    false,
+                    LIGHT_BG(),
+                    |ui, o| {
+                        let p = ui.painter().clone();
+                        winui::checkbox_light(
+                            ui,
+                            o + vec2(21.0, 24.0),
+                            &mut e.on,
+                            // i18n: Options → zrok tunnel check box
+                            "Let the phone reach MDM from anywhere through zrok",
+                            true,
+                        );
+                        // i18n: Options → zrok tunnel: label before the zrok command's name
+                        winui::text_right(&p, o.x + 96.0, o.y + 58.0, crate::i18n::t("zrok command:"), LIGHT_TEXT());
+                        winui::edit_light(ui, r(o, 104.0, 44.0, 110.0, 23.0), &mut e.command, true, false);
+                        // i18n: Options → zrok tunnel: label before the service's endpoint (a self-hosted one)
+                        winui::text_right(&p, o.x + 280.0, o.y + 58.0, crate::i18n::t("Service:"), LIGHT_TEXT());
+                        winui::edit_light(ui, r(o, 288.0, 44.0, 150.0, 23.0), &mut e.api_endpoint, true, false);
+                        // i18n: Options → zrok tunnel: label before the account's token (kept sealed)
+                        winui::text_right(&p, o.x + 96.0, o.y + 90.0, crate::i18n::t("Account token:"), LIGHT_TEXT());
+                        password(ui, r(o, 104.0, 76.0, 334.0, 23.0), &mut e.account_token, true);
+                        group(ui, o, 16.0, 112.0, 512.0, 140.0, "The shares' tokens (the phone has them once, from the QR)");
+                        // i18n: Options → zrok tunnel: label of the API share's token
+                        winui::text_right(&p, o.x + 80.0, o.y + 146.0, crate::i18n::t("API:"), LIGHT_TEXT());
+                        winui::edit_light(ui, r(o, 88.0, 132.0, 300.0, 23.0), &mut e.api_token, true, false);
+                        // i18n: Options → zrok tunnel: label of the SOCKS share's token
+                        winui::text_right(&p, o.x + 80.0, o.y + 174.0, crate::i18n::t("SOCKS:"), LIGHT_TEXT());
+                        winui::edit_light(ui, r(o, 88.0, 160.0, 300.0, 23.0), &mut e.socks_token, true, false);
+                        // i18n: Options → zrok tunnel: label of the drive share's token
+                        winui::text_right(&p, o.x + 80.0, o.y + 202.0, crate::i18n::t("Drive:"), LIGHT_TEXT());
+                        winui::edit_light(ui, r(o, 88.0, 188.0, 300.0, 23.0), &mut e.drive_token, true, false);
+                        text(
+                            &p,
+                            o.x + 30.0,
+                            o.y + 224.0,
+                            // i18n: Options → zrok tunnel: a token left empty is made at start
+                            crate::i18n::t("Empty: a token is made and kept here."),
+                            LIGHT_DISABLED(),
+                        );
+                        winui::checkbox_light(
+                            ui,
+                            o + vec2(21.0, 266.0),
+                            &mut e.open,
+                            // i18n: Options → zrok tunnel check box: the shares take any account
+                            "Any zrok account may use the shares",
+                            true,
+                        );
+                        // i18n: Options → zrok tunnel: label before the accounts a closed share grants
+                        winui::text_right(&p, o.x + 116.0, o.y + 298.0, crate::i18n::t("Accounts allowed:"), LIGHT_TEXT());
+                        let grants = winui::edit_light(
+                            ui,
+                            r(o, 124.0, 284.0, 300.0, 23.0),
+                            &mut e.grants,
+                            !e.open,
+                            false,
+                        );
+                        if e.open {
+                            winui::why_disabled(
+                                grants,
+                                true,
+                                // i18n: why the accounts' box is greyed
+                                "The shares are open to any account.",
+                            );
+                        }
+                        // i18n: Options → zrok tunnel: label before the folder the drive share points at
+                        winui::text_right(&p, o.x + 96.0, o.y + 330.0, crate::i18n::t("Shared folder:"), LIGHT_TEXT());
+                        winui::edit_light(ui, r(o, 104.0, 316.0, 334.0, 23.0), &mut e.drive_dir, true, false);
+                        group(ui, o, 16.0, 350.0, 512.0, 112.0, "Status");
+                        let line = match &status {
+                            None => crate::i18n::t("It starts when Options' OK saves it.").to_owned(),
+                            Some(mdm_tunnel::Status::Off) => {
+                                crate::i18n::t("Off: the phone reaches MDM only on the local network.").to_owned()
+                            }
+                            Some(mdm_tunnel::Status::Starting) => {
+                                crate::i18n::t("Starting: reaching the service, making the shares...").to_owned()
+                            }
+                            Some(mdm_tunnel::Status::Running(sh)) => crate::i18n::fmt(
+                                // i18n: Options → zrok tunnel → Status: everything is up; {n} = how many shares
+                                crate::i18n::t("Running: {n} share(s) up."),
+                                &[("n", &sh.len().to_string())],
+                            ),
+                            Some(mdm_tunnel::Status::Partly(sh)) => crate::i18n::fmt(
+                                // i18n: Options → zrok tunnel → Status: some shares are up
+                                crate::i18n::t("Partly: {n} share(s) up (the log says more)."),
+                                &[("n", &sh.len().to_string())],
+                            ),
+                            Some(mdm_tunnel::Status::Failed(err)) => crate::i18n::fmt(
+                                // i18n: Options → zrok tunnel → Status: it could not start; {error} = the reason
+                                crate::i18n::t("It could not start: {error}"),
+                                &[("error", err)],
+                            ),
+                        };
+                        text(&p, o.x + 30.0, o.y + 380.0, line, LIGHT_TEXT());
+                        // i18n: Options → zrok tunnel: label above the setup QR the phone reads
+                        text(&p, o.x + 30.0, o.y + 404.0, crate::i18n::t("The phone's setup (ViaMDM reads it once):"), LIGHT_TEXT());
+                        readonly_ltr(ui, r(o, 30.0, 414.0, 320.0, 21.0), &uri);
+                        crate::remote::paint_qr(&p, egui::Rect::from_min_size(
+                            o + vec2(404.0, 358.0),
+                            vec2(96.0, 96.0),
+                        ), &uri);
+                        ok_cancel(ui, o, 386.0, 462.0, true)
+                    },
+                );
+                match out {
+                    Outcome::Open => self.sub = Some(Sub::Tunnel),
+                    Outcome::Done(()) => e.apply_to(&mut self.s),
+                    Outcome::Closed => {}
                 }
             }
             Sub::Login(row, mut site, mut user, mut pass) => {

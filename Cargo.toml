@@ -25,6 +25,7 @@ mdm-ipc = { path = "crates/ipc" }
 mdm-labserver = { path = "crates/labserver" }
 mdm-mcp = { path = "crates/mcp" }
 mdm-remote = { path = "crates/remote" }
+mdm-tunnel = { path = "crates/tunnel" }
 mdm-tools = { path = "crates/tools" }
 mdm-torrent = { path = "crates/torrent" }
 

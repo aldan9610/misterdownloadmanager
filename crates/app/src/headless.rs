@@ -14,6 +14,9 @@
 //! | `--listen <addr>` | `MDM_REMOTE_LISTEN` | where it listens: "" every local network address |
 //! | `--hosts <names>` | `MDM_REMOTE_HOSTS` | names besides addresses it answers to (a NAS's) |
 //! | | `MDM_REMOTE_URL` | the page's address as people open it (a container's isn't) |
+//! | `--tunnel` / `--no-tunnel` | `MDM_TUNNEL` | the zrok tunnel (off unless the settings say) |
+//! | | `MDM_TUNNEL_TOKEN` | the zrok account's token (kept, never printed) |
+//! | `--tunnel-drive <dir>` | `MDM_TUNNEL_DRIVE` | the folder the drive share points at |
 //!
 //! The remote control is on (that is the point); `MDM_REMOTE=off` turns it off. With no device
 //! paired yet, a pairing code is printed at start; `misterdownloadmanager-cli pair` prints
@@ -116,6 +119,19 @@ pub fn main(args: Vec<String>) -> ExitCode {
     s.show_complete = false;
     let hosts = setting(&args, "hosts", "MDM_REMOTE_HOSTS");
     crate::remote::set_hosts(hosts.as_deref());
+    // The zrok tunnel: off unless the settings say so, the environment or a flag turning it on
+    // (the account token comes by the environment: a flag would sit in `ps`'s output).
+    match setting(&args, "tunnel", "MDM_TUNNEL").as_deref().map(str::trim) {
+        Some("on") | Some("1") | Some("true") => s.tunnel_on = true,
+        Some("off") | Some("0") | Some("false") => s.tunnel_on = false,
+        _ => {}
+    }
+    if let Some(t) = std::env::var("MDM_TUNNEL_TOKEN").ok().filter(|v| !v.trim().is_empty()) {
+        s.tunnel_account_token = t;
+    }
+    if let Some(d) = setting(&args, "tunnel-drive", "MDM_TUNNEL_DRIVE") {
+        s.tunnel_drive_dir = d;
+    }
     let downloads = setting(&args, "downloads", "MDM_DOWNLOADS").map(PathBuf::from);
     if let Some(d) = &downloads
         && let Err(e) = writable(d)
@@ -153,6 +169,7 @@ pub fn main(args: Vec<String>) -> ExitCode {
     )
     .headless(downloads);
     let mut told = false;
+    let mut tunnel_told = false;
     loop {
         let out = ctx.run_pass(egui::RawInput::default(), |ctx| app.tick(ctx));
         let delay = out
@@ -164,6 +181,9 @@ pub fn main(args: Vec<String>) -> ExitCode {
         out.textures_delta.clear();
         if !told {
             told = tell(&mut app);
+        }
+        if !tunnel_told {
+            tunnel_told = tell_tunnel(&mut app);
         }
         if stop.load(Ordering::SeqCst) || app.wants_exit() {
             break;
@@ -245,6 +265,39 @@ fn tell(app: &mut crate::app::App) -> bool {
         }
         mdm_remote::Status::Failed(e) => {
             println!("The remote control could not start: {e}");
+            true
+        }
+    }
+}
+
+/// Say what the tunnel is doing, with its shares' tokens and the setup QR's text once they
+/// are up; true once said (or when it is off). A tunnel still starting waits.
+fn tell_tunnel(app: &mut crate::app::App) -> bool {
+    use mdm_tunnel::Status;
+    let Some(tunnel) = &app.tunnel else {
+        return true;
+    };
+    match tunnel.status() {
+        Status::Off => true,
+        Status::Starting => false,
+        Status::Running(_) | Status::Partly(_) => {
+            let tokens = tunnel.tokens();
+            let said = |role| tokens.get(&role).cloned().unwrap_or_default();
+            println!(
+                "The zrok tunnel runs: api {}  socks {}  drive {}",
+                said(mdm_tunnel::Role::Api),
+                said(mdm_tunnel::Role::Socks),
+                said(mdm_tunnel::Role::Drive),
+            );
+            let uri = crate::tunnel::setup_text(&app.settings, Some(tunnel));
+            println!(
+                "On the phone, the ViaMDM app reads the setup from this QR (or its text):\n{}",
+                crate::remote::qr_text(&uri)
+            );
+            true
+        }
+        Status::Failed(e) => {
+            println!("The zrok tunnel could not start: {e}");
             true
         }
     }

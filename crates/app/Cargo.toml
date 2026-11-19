@@ -45,6 +45,7 @@ mdm-geo.workspace = true
 mdm-ipc.workspace = true
 # The remote control (#141): a paired phone adds and controls downloads over the local network.
 mdm-remote.workspace = true
+mdm-tunnel.workspace = true
 mdm-tools.workspace = true
 mdm-torrent.workspace = true
 open.workspace = true

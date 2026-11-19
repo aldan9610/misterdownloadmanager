@@ -1462,6 +1462,8 @@ pub struct App {
     torrent_host: crate::torrents::Host,
     /// The remote control (#141): paired phones and computers on the local network.
     pub remote: Option<mdm_remote::Remote>,
+    /// The zrok tunnel: the same things, published for the phone to reach from anywhere.
+    pub tunnel: Option<mdm_tunnel::Tunnel>,
     /// Torrents a paired device sent, their files being looked up (`remote::poll_torrents`).
     pub remote_torrents: Vec<crate::remote::Lookup>,
     /// Click'n'Load (#37): what pages post waits here, for its site's answer and Link grabber.
@@ -1920,6 +1922,10 @@ impl App {
         self.headless = true;
         if let Some(d) = downloads {
             self.downloads = d;
+            // The tunnel's drive share follows the folder --downloads chose.
+            if let Some(t) = &self.tunnel {
+                t.apply(crate::tunnel::config(&self.settings, &self.downloads));
+            }
         }
         // Nobody to answer Click'n'Load's question or tick Link grabber's packages.
         let _ = self.cnl.listen(false);
@@ -2013,6 +2019,11 @@ impl App {
         settings.publish_categories();
         // The remote control (#141): off unless Options → Remote turned it on.
         let remote = crate::remote::start(&rt, sink, &settings);
+        // The zrok tunnel: the same things, published for the phone to reach from anywhere.
+        let downloads = dirs::download_dir()
+            .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let tunnel = crate::tunnel::start(&rt, &settings, &downloads);
         // Started with the session where a window can't be hidden (Wayland, #226): minimized.
         if start == crate::Start::Minimized {
             tracing::info!("started with the session: minimized (a window can't be hidden here)");
@@ -2035,6 +2046,7 @@ impl App {
         );
         app.lang_picker = ask_language.then(|| crate::langpick::Picker::new(true, None));
         app.remote = remote;
+        app.tunnel = tunnel;
         // Click'n'Load (#37): off unless Options → Archives and Link grabber turned it on.
         if let Err(why) = app.cnl.listen(app.settings.cnl_on) {
             // i18n: title of the notice when Click'n'Load couldn't start
@@ -2210,6 +2222,7 @@ impl App {
             torrents_started: false,
             torrent_host: crate::torrents::Host::new(),
             remote: None,
+            tunnel: None,
             remote_torrents: Vec::new(),
             cnl,
             free_space: Default::default(),
@@ -7608,6 +7621,11 @@ impl App {
         if let Some(r) = &self.remote {
             r.apply(crate::remote::config(&self.settings));
         }
+        // Options → Remote → zrok tunnel: shares started, stopped or moved (the API share
+        // follows the remote control's port here too).
+        if let Some(t) = &self.tunnel {
+            t.apply(crate::tunnel::config(&self.settings, &self.downloads));
+        }
         // Options → Archives and Link grabber: Click'n'Load turned on or off; off forgets the
         // sites' answers, so a blocked site can be asked again.
         if !self.settings.cnl_on {
@@ -8328,7 +8346,8 @@ impl App {
                             &self.downloads,
                             self.host_limits.learned(),
                         )
-                        .with_remote(self.remote.clone()),
+                        .with_remote(self.remote.clone())
+                        .with_tunnel(self.tunnel.clone()),
                     );
                 } else {
                     dialogs::raise(ctx, dialogs::dialog_viewport("options"));
@@ -12280,6 +12299,9 @@ impl App {
                     self.settings.publish_categories();
                     if let Some(r) = &self.remote {
                         r.apply(crate::remote::config(&self.settings));
+                    }
+                    if let Some(t) = &self.tunnel {
+                        t.apply(crate::tunnel::config(&self.settings, &self.downloads));
                     }
                     self.options = None;
                 }

@@ -42,7 +42,7 @@ pub fn set_hosts(hosts: Option<&str>) {
 /// Where and whether to listen, from `settings`; `MDM_REMOTE_HOSTS` (names separated by commas)
 /// adds the names a request may use besides the addresses (a server's, a reverse proxy's).
 pub fn config(settings: &Settings) -> mdm_remote::Config {
-    let hosts = HOSTS
+    let mut hosts: Vec<String> = HOSTS
         .get()
         .cloned()
         .or_else(|| std::env::var("MDM_REMOTE_HOSTS").ok())
@@ -51,6 +51,10 @@ pub fn config(settings: &Settings) -> mdm_remote::Config {
         .map(|h| h.trim().to_ascii_lowercase())
         .filter(|h| !h.is_empty())
         .collect();
+    // A client that arrives over the zrok tunnel connects to 127.0.0.1 on the phone's side,
+    // which names this server 127.0.0.1 in its Host header; the loopback names are its own
+    // when the tunnel is on (its share is the only thing pointing the phone here).
+    hosts.extend(crate::tunnel::extra_hosts(settings));
     mdm_remote::Config {
         on: settings.remote_on,
         port: settings.remote_port,

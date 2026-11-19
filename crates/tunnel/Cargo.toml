@@ -1,0 +1,22 @@
+[package]
+name = "mdm-tunnel"
+description = "Mister Download Manager's zrok tunnel: the remote control, a SOCKS5 egress and a shared folder published on a zrok account for the phone to reach from anywhere"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros"] }
+
+[lints]
+workspace = true

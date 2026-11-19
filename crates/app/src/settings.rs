@@ -296,6 +296,28 @@ pub struct Settings {
     /// Where it listens: "" every local network address, `127.0.0.1` this computer only, or
     /// one address (`mdm_remote::addrs::chosen`).
     pub remote_listen: String,
+    /// Options → Remote → zrok tunnel (beyond IDM): the remote control, a SOCKS5 egress and the
+    /// downloads folder, published on a zrok account for the phone to reach from anywhere
+    /// (crates/tunnel). Off by default.
+    pub tunnel_on: bool,
+    /// The zrok command (`zrok2`), as installed.
+    pub tunnel_command: String,
+    /// The service's endpoint, for a self-hosted zrok; "" zrok's own.
+    pub tunnel_api_endpoint: String,
+    /// The zrok account's token, from the account's page. Sealed on disk like any secret.
+    #[serde(with = "sealed")]
+    pub tunnel_account_token: String,
+    /// Shares it creates are open to any account, instead of closed with grants.
+    pub tunnel_open: bool,
+    /// The accounts (their names at the service) a closed share grants, comma-separated.
+    pub tunnel_grants: String,
+    /// The three shares' tokens: api, socks, drive ("" = make one and keep it in the data
+    /// folder). The phone has them once, from the QR.
+    pub tunnel_api_token: String,
+    pub tunnel_socks_token: String,
+    pub tunnel_drive_token: String,
+    /// The folder the drive share points at; "" the downloads folder.
+    pub tunnel_drive_dir: String,
     /// Torrents keep sharing after they finish (D-018: off; a finished torrent stops, like any
     /// download).
     pub torrent_keep_sharing: bool,
@@ -524,6 +546,16 @@ impl Default for Settings {
             remote_on: false,
             remote_port: mdm_remote::PORT,
             remote_listen: String::new(),
+            tunnel_on: false,
+            tunnel_command: mdm_tunnel::Config::default_command(),
+            tunnel_api_endpoint: String::new(),
+            tunnel_account_token: String::new(),
+            tunnel_open: false,
+            tunnel_grants: String::new(),
+            tunnel_api_token: String::new(),
+            tunnel_socks_token: String::new(),
+            tunnel_drive_token: String::new(),
+            tunnel_drive_dir: String::new(),
             torrent_keep_sharing: false,
             torrent_associations: None,
             torrent_associations_before: false,

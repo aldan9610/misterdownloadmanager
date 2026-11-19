@@ -73,6 +73,7 @@ mod torrentdlg;
 mod torrentfiles;
 mod torrents;
 mod transfer;
+mod tunnel;
 mod tray;
 #[cfg(unix)]
 mod unix;

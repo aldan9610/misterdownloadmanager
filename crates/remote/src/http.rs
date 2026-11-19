@@ -307,6 +307,17 @@ struct AddBody {
     /// Start now (else it waits in `queue`, the main queue by default).
     #[serde(default)]
     start: bool,
+    /// The request context to reuse, as the browser extension hands its own (#157): a download
+    /// some sites serve only to a browser's agent, or to the page's origin. Empty: MDM's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    user_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    referer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
+    /// The page the link was followed from, whole, as the browser's own sends (#607).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    page_url: Option<String>,
 }
 
 async fn add(s: S, _: Paired, axum::Json(b): axum::Json<AddBody>) -> Response {
@@ -314,6 +325,9 @@ async fn add(s: S, _: Paired, axum::Json(b): axum::Json<AddBody>) -> Response {
     if url.is_empty() || url.len() > MAX_URL {
         return error(StatusCode::BAD_REQUEST, "bad-address");
     }
+    let clean = |v: &Option<String>| {
+        v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned)
+    };
     ask(
         &s,
         mdm_ipc::Command {
@@ -322,6 +336,10 @@ async fn add(s: S, _: Paired, axum::Json(b): axum::Json<AddBody>) -> Response {
             queue: b.queue.filter(|q| !q.is_empty()),
             later: !b.start,
             silent: true,
+            user_agent: clean(&b.user_agent),
+            referer: clean(&b.referer),
+            origin: clean(&b.origin),
+            page_url: clean(&b.page_url),
             ..Default::default()
         },
     )
