@@ -4622,6 +4622,8 @@ dependencies = [
  "wayland-client",
  "wgpu",
  "windows",
+ "windows-collections",
+ "windows-future",
  "windows-sys 0.61.2",
  "winit",
  "winresource",

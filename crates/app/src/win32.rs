@@ -9231,3 +9231,366 @@ impl Drop for GlobalHotKeyOs {
         }
     }
 }
+
+// ---- a downloaded file handed to other programs (#1496, fileclip.rs) ---------------------------
+
+/// Let the program MDM starts now come to the front (#1496): the right the browser's native
+/// host passed to MDM (`AllowSetForegroundWindow` on MDM's process) is passed on to any, so a
+/// file opened, Explorer's window or the share sheet asked for from the browser popup's list
+/// doesn't open behind the browser. Explorer's window comes from an Explorer process already
+/// running, not from one MDM starts: hence any, not a process id.
+pub fn pass_foreground() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
+    // SAFETY: a plain call; it fails harmlessly when MDM has no right to pass on.
+    unsafe {
+        AllowSetForegroundWindow(ASFW_ANY);
+    }
+}
+
+/// The `CF_HDROP` block for `paths` (`DROPFILES`, shellapi.h): its 20-byte header (where the
+/// list starts, a point, whether it is a non-client drop, wide characters), then each path in
+/// UTF-16 ending with a null, then one more null.
+fn drop_files(paths: &[&std::path::Path]) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut out = Vec::new();
+    for v in [20u32, 0, 0, 0, 1] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    for p in paths {
+        for u in p.as_os_str().encode_wide().chain(Some(0)) {
+            out.extend_from_slice(&u.to_le_bytes());
+        }
+    }
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}
+
+/// Put `paths` on the clipboard as Explorer's Copy does (#1496): `CF_HDROP` with their paths,
+/// and `Preferred DropEffect` = copy, so a paste in a folder copies them (never moves them) and
+/// a chat, a mail or a web page's upload box takes them as files. Called under MDM's clipboard
+/// lock (fileclip.rs).
+pub fn copy_files(paths: &[&std::path::Path]) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    };
+    use windows_sys::Win32::System::Memory::{
+        GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock,
+    };
+    const CF_HDROP: u32 = 15;
+    const DROPEFFECT_COPY: u32 = 1;
+    let name: Vec<u16> = "Preferred DropEffect"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    // SAFETY: a NUL-terminated name; 0 when it can't be registered (then left out).
+    let effect = unsafe { RegisterClipboardFormatW(name.as_ptr()) };
+    let blocks = [
+        (CF_HDROP, drop_files(paths)),
+        (effect, DROPEFFECT_COPY.to_le_bytes().to_vec()),
+    ];
+    // Another program may have it open a moment (a clipboard manager reading what changed).
+    let mut opened = false;
+    for _ in 0..10 {
+        // SAFETY: no owner window, as arboard opens it; closed below.
+        if unsafe { OpenClipboard(std::ptr::null_mut()) } != 0 {
+            opened = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+    if !opened {
+        return Err(format!(
+            "another program holds the clipboard ({})",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let put = || -> Result<(), String> {
+        // SAFETY: the clipboard is open on this thread. Each block is copied into memory of its
+        // own size, which the clipboard owns once SetClipboardData takes it (freed here when it
+        // doesn't).
+        unsafe {
+            if EmptyClipboard() == 0 {
+                return Err(format!("{}", std::io::Error::last_os_error()));
+            }
+            for (format, bytes) in &blocks {
+                if *format == 0 {
+                    continue;
+                }
+                let mem = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
+                if mem.is_null() {
+                    return Err("out of memory".into());
+                }
+                let at = GlobalLock(mem);
+                if at.is_null() {
+                    GlobalFree(mem);
+                    return Err("out of memory".into());
+                }
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), at.cast::<u8>(), bytes.len());
+                GlobalUnlock(mem);
+                if SetClipboardData(*format, mem).is_null() {
+                    let e = std::io::Error::last_os_error();
+                    GlobalFree(mem);
+                    return Err(format!("{e}"));
+                }
+            }
+            Ok(())
+        }
+    };
+    let done = put();
+    // SAFETY: opened above, on this thread.
+    unsafe {
+        CloseClipboard();
+    }
+    done
+}
+
+/// How long the share sheet's window waits for the share to end before it goes (a share the
+/// sheet never says ended: closed without choosing, on a Windows before 11).
+const SHARE_WAIT_MS: u32 = 5 * 60 * 1000;
+
+/// Windows' share sheet for the file at `path` (#1496): DataTransferManager through its interop
+/// for desktop programs (`IDataTransferManagerInterop`: `ShowShareUIForWindow` alone fails for
+/// them), the file as a `StorageFile` (any size, nothing copied). The sheet belongs to a window:
+/// one of MDM's own at the pointer, 1×1, all but transparent and clicks going through it,
+/// which the browser's right to come to the front ([`pass_foreground`]) brings up. On a thread
+/// of its own, the window's: the sheet asks that thread for the file (`DataRequested`), and
+/// the window stays until the share is done or cancelled ([`SHARE_WAIT_MS`] at most). Returns
+/// once the sheet was asked for, or why it couldn't be.
+pub fn share_file(path: &std::path::Path) -> Result<(), String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = path.to_owned();
+    std::thread::Builder::new()
+        .name("share sheet".into())
+        .spawn(move || share_on_this_thread(&path, &tx))
+        .map_err(|e| e.to_string())?;
+    // The file and the sheet come within a moment; a slower one is taken as asked for (the
+    // app's answer to the browser waits meanwhile).
+    rx.recv_timeout(std::time::Duration::from_millis(1500))
+        .unwrap_or(Ok(()))
+}
+
+fn share_on_this_thread(
+    path: &std::path::Path,
+    said: &std::sync::mpsc::Sender<Result<(), String>>,
+) {
+    use windows::ApplicationModel::DataTransfer::{
+        DataPackage, DataRequestedEventArgs, DataTransferManager, ShareCompletedEventArgs,
+    };
+    use windows::Foundation::TypedEventHandler;
+    use windows::Storage::{IStorageItem, StorageFile};
+    use windows::Win32::UI::Shell::IDataTransferManagerInterop;
+    use windows::core::{AgileReference, HSTRING, IInspectable, Interface, Ref};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, GetMessageW, KillTimer, MSG, PostMessageW, SetTimer, TranslateMessage,
+        WM_CLOSE, WM_TIMER,
+    };
+    com_on_this_thread();
+    let Some(window) = ShareAnchor::new() else {
+        let _ = said.send(Err("no window for the share sheet".into()));
+        return;
+    };
+    let hwnd = window.0;
+    let asked = (|| -> windows::core::Result<()> {
+        let file: StorageFile = StorageFile::GetFileFromPathAsync(&HSTRING::from(path))?.join()?;
+        // The handler may run on another thread: the file reaches it through an agile
+        // reference (a StorageFile itself isn't sent between threads).
+        let item = AgileReference::new(&file.cast::<IStorageItem>()?)?;
+        let title = HSTRING::from(
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        );
+        let interop = windows::core::factory::<DataTransferManager, IDataTransferManagerInterop>()?;
+        let raw = windows::Win32::Foundation::HWND(hwnd);
+        // SAFETY: our window, alive until this thread's loop below ends.
+        let manager: DataTransferManager = unsafe { interop.GetForWindow(raw)? };
+        // The window's handle as a number, for the handlers (on this thread or another).
+        let anchor = hwnd as usize;
+        let close = move || {
+            // SAFETY: a message to our window; harmless once it is gone.
+            unsafe { PostMessageW(anchor as HWND, WM_CLOSE, 0, 0) };
+        };
+        manager.DataRequested(&TypedEventHandler::new(
+            move |_: Ref<DataTransferManager>, args: Ref<DataRequestedEventArgs>| {
+                let data = args.ok()?.Request()?.Data()?;
+                data.Properties()?.SetTitle(&title)?;
+                let items: windows_collections::IIterable<IStorageItem> =
+                    vec![Some(item.resolve()?)].into();
+                data.SetStorageItemsReadOnly(&items)?;
+                // Done or cancelled (Windows 11): the window goes. A Windows without these
+                // events keeps it until SHARE_WAIT_MS.
+                let _ = data.ShareCompleted(&TypedEventHandler::new(
+                    move |_: Ref<DataPackage>, _: Ref<ShareCompletedEventArgs>| {
+                        close();
+                        Ok(())
+                    },
+                ));
+                let _ = data.ShareCanceled(&TypedEventHandler::new(
+                    move |_: Ref<DataPackage>, _: Ref<IInspectable>| {
+                        close();
+                        Ok(())
+                    },
+                ));
+                Ok(())
+            },
+        ))?;
+        // SAFETY: our window, shown and in front.
+        unsafe { interop.ShowShareUIForWindow(raw) }
+    })();
+    let failed = asked.as_ref().err().map(|e| e.to_string());
+    let _ = said.send(asked.map_err(|e| e.to_string()));
+    if let Some(e) = failed {
+        tracing::warn!("share sheet: {e}");
+        return;
+    }
+    // SAFETY: this thread's own window and message loop; the timer is ours and killed after.
+    unsafe {
+        let timer = SetTimer(hwnd, 1, SHARE_WAIT_MS, None);
+        let mut msg: MSG = zeroed();
+        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+            if msg.hwnd == hwnd && (msg.message == WM_CLOSE || msg.message == WM_TIMER) {
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        KillTimer(hwnd, timer);
+    }
+    drop(window);
+}
+
+/// The share sheet's window ([`share_file`]): destroyed when dropped.
+struct ShareAnchor(HWND);
+
+impl ShareAnchor {
+    /// A 1×1 tool window at the pointer, shown, all but transparent (a window at alpha 0 counts
+    /// as hidden), letting clicks through, and brought to the front.
+    fn new() -> Option<ShareAnchor> {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, GetCursorPos, LWA_ALPHA, RegisterClassW,
+            SW_SHOWNOACTIVATE, SetForegroundWindow, SetLayeredWindowAttributes, ShowWindow,
+            WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+        };
+        let class: Vec<u16> = "MDM share sheet".encode_utf16().chain(Some(0)).collect();
+        // SAFETY: a window class of plain defaults, registered once per process (a second
+        // registration fails harmlessly); the window is ours, checked before use.
+        unsafe {
+            let module = GetModuleHandleW(std::ptr::null());
+            let mut wc: WNDCLASSW = zeroed();
+            wc.lpfnWndProc = Some(DefWindowProcW);
+            wc.hInstance = module;
+            wc.lpszClassName = class.as_ptr();
+            RegisterClassW(&wc);
+            let mut at = POINT { x: 0, y: 0 };
+            GetCursorPos(&mut at);
+            let hwnd = CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST,
+                class.as_ptr(),
+                class.as_ptr(),
+                WS_POPUP,
+                at.x,
+                at.y,
+                1,
+                1,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                module,
+                std::ptr::null(),
+            );
+            if hwnd.is_null() {
+                return None;
+            }
+            SetLayeredWindowAttributes(hwnd, 0, 1, LWA_ALPHA);
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            SetForegroundWindow(hwnd);
+            Some(ShareAnchor(hwnd))
+        }
+    }
+}
+
+impl Drop for ShareAnchor {
+    fn drop(&mut self) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow;
+        // SAFETY: our window, on the thread that made it.
+        unsafe {
+            DestroyWindow(self.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod fileclip_tests {
+    use std::path::Path;
+
+    /// The block a paste reads the files from: its header, then each path and the list's end.
+    #[test]
+    fn the_file_list_is_dropfiles() {
+        let a = Path::new(r"C:\Downloads\report.pdf");
+        let b = Path::new(r"D:\é\b.zip");
+        let block = super::drop_files(&[a, b]);
+        let header: Vec<u32> = block[..20]
+            .chunks(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(header, [20, 0, 0, 0, 1]);
+        let units: Vec<u16> = block[20..]
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let text = String::from_utf16(&units).unwrap();
+        assert_eq!(text, "C:\\Downloads\\report.pdf\0D:\\é\\b.zip\0\0");
+    }
+
+    /// The real clipboard, a private one (`private_clipboard`: the person's is neither read nor
+    /// written): the file goes on it as Explorer's Copy puts it, a paste reads it back as a
+    /// file, and Preferred DropEffect says copy.
+    #[test]
+    fn a_file_goes_on_the_clipboard_as_explorer_copies_it() {
+        use crate::win32::private_clipboard::in_private_clipboard;
+        in_private_clipboard(
+            "win32::fileclip_tests::a_file_goes_on_the_clipboard_as_explorer_copies_it",
+            |_| {
+                use windows_sys::Win32::System::DataExchange::{
+                    CloseClipboard, GetClipboardData, OpenClipboard, RegisterClipboardFormatW,
+                };
+                use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+                let dir = tempfile::tempdir().unwrap();
+                let file = dir.path().join("a file é.zip");
+                std::fs::write(&file, b"zip").unwrap();
+                super::copy_files(&[&file]).unwrap();
+                let back = arboard::Clipboard::new()
+                    .unwrap()
+                    .get()
+                    .file_list()
+                    .unwrap();
+                assert_eq!(back.len(), 1);
+                assert_eq!(
+                    std::fs::canonicalize(&back[0]).unwrap(),
+                    std::fs::canonicalize(&file).unwrap()
+                );
+                let name: Vec<u16> = "Preferred DropEffect"
+                    .encode_utf16()
+                    .chain(Some(0))
+                    .collect();
+                // SAFETY: the test's own clipboard, opened and closed here; the block read
+                // within its size.
+                let effect = unsafe {
+                    let format = RegisterClipboardFormatW(name.as_ptr());
+                    assert!(OpenClipboard(std::ptr::null_mut()) != 0);
+                    let mem = GetClipboardData(format);
+                    assert!(!mem.is_null(), "no Preferred DropEffect");
+                    assert!(GlobalSize(mem) >= 4);
+                    let at = GlobalLock(mem).cast::<u32>();
+                    let v = at.read_unaligned();
+                    GlobalUnlock(mem);
+                    CloseClipboard();
+                    v
+                };
+                assert_eq!(effect, 1, "copy, not move");
+            },
+        );
+    }
+}
