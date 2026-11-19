@@ -7339,6 +7339,11 @@ impl App {
             "open" | "copy-file" | "share" if !complete => Answer::not(why::CANT),
             "share" if !crate::fileclip::CAN_SHARE => Answer::not(why::UNSUPPORTED),
             "open" | "copy-file" | "share" if missing() => Answer::not(why::MISSING),
+            // An off-screen run (the tests) opens nothing on the person's screen: it logs.
+            "open" | "folder" if crate::offscreen() => {
+                tracing::info!("{} (off-screen, not opened): {}", a.act, dest.display());
+                Answer::done()
+            }
             "open" => {
                 crate::recent::pass_foreground();
                 crate::dialogs::open_download(&dest, moved_away);
