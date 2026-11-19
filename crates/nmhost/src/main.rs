@@ -1331,7 +1331,14 @@ fn serve() -> io::Result<()> {
             Ok(m) => {
                 // This browser has the extension: the app stops offering it (extension.rs).
                 mdm_ipc::extension::mark_seen(browser(&m), m.v.as_deref().unwrap_or_default());
-                answer(m, &mdm_ipc::capture::CaptureRules::load())
+                // The popup's list asks every second while it is open (#1496) and needs no rules:
+                // not read for it (they are in downloads.json, with the whole list).
+                let rules = if m.recent.is_some() || m.download_act.is_some() {
+                    mdm_ipc::capture::CaptureRules::default()
+                } else {
+                    mdm_ipc::capture::CaptureRules::load()
+                };
+                answer(m, &rules)
             }
             Err(e) => Reply::failed("refused", e.to_string()),
         };
