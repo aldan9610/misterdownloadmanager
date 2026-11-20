@@ -3,6 +3,14 @@
 Each release's notes on GitHub come from its section here (`## [X.Y.Z]`, see
 `.github/workflows/release.yml`).
 
+## [0.5.3]
+
+### Added
+
+- **zrok tunnel for the phone** (this fork's own change): the new crate `tunnel` (crates/tunnel) manages the MDM side of a zrok share set — a TCP tunnel carrying the remote-control API, a SOCKS egress for the phone's traffic and a `drive` share that publishes a folder for the WebDAV explorer of the ViaMDM Android client. Reserved tokens are kept in the store, so a share comes back under its own token after a restart (`--share-token`) and is released on the way out (`delete share`). The remote API takes a download's page context (user agent, referer, origin and page URL) on `/api/add`, and each tunnel gets its own loopback hosts, so a client's traffic reaches only its own endpoints.
+- **Options → Remote → zrok tunnel…**: the account token, one token per share, the ports of the three services, and a QR (`mdm-tunnel://setup?…`) that the ViaMDM Android client scans to pair.
+- **Headless mode**: `--tunnel` (or `MDM_TUNNEL_TOKEN`) starts the tunnel with no window and prints the QR to pair a phone. See [docs/tunnel.md](docs/tunnel.md).
+
 ## [Unreleased]
 
 ### Added
