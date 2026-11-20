@@ -113,7 +113,10 @@ mod tests {
             vec!["one@example.com".to_owned(), "two@example.com".to_owned()]
         );
         assert_eq!(c.shares.len(), 3);
-        assert_eq!(c.shares[0], ShareConfig::new(Role::Api, "127.0.0.1:9000"));
+        // El struct completo lleva el token que Options le dio (lo mira la línea siguiente),
+        // así que aquí se comparan el rol y el destino, no el struct entero.
+        assert_eq!(c.shares[0].role, Role::Api);
+        assert_eq!(c.shares[0].target, "127.0.0.1:9000");
         assert_eq!(c.shares[0].token, "A1");
         assert_eq!(c.shares[1].role, Role::Socks);
         assert_eq!(c.shares[2].target, "/srv/descargas");
